@@ -5,7 +5,7 @@ from agents.basenet import ResBlock, BaseNet
 
 
 class DQNet(BaseNet):
-    def __init__(self, obs_shape, action_dim, out_mlp_hidden_dim, num_blocks, res_out_channels, momentum=0.1):
+    def __init__(self, obs_shape, action_dim, out_mlp_hidden_dim, num_blocks, res_out_channels: int, momentum=0.1):
         """
         Image-based
         Here I follows the model from paper EfficientZero
@@ -15,10 +15,10 @@ class DQNet(BaseNet):
             shape of observations: [C, W, H]
         num_blocks: int
             number of res blocks
-        num_channels: int
-            channels of hidden states
-        downsample: bool
-            True -> do downsampling for observations. (For board games, do not need)
+        out_mlp_hidden_dim: int
+            channels of hidden states for the final hidden layer
+        res_out_channels: bool
+            True -> the number of out channels after the res net
         """
         super().__init__()
 
@@ -74,10 +74,3 @@ class DQNet(BaseNet):
             mean += abs(param.detach().cpu().numpy().reshape(-1)).tolist()
         mean = sum(mean) / len(mean)
         return mean
-
-
-if __name__ == '__main__':
-    import torch
-
-    model = DQNet((3, 96, 96), 5, 32, 2, 64)
-    obs = torch.rand(2, 3, 96, 96)

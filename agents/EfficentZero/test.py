@@ -9,7 +9,7 @@ import ctree.cytree as cytree
 from tqdm.auto import tqdm
 from torch.cuda.amp import autocast as autocast
 from .mcts import MCTS
-from core.wrap import GameHistory
+from gamehistory import GameHistory
 from core.utils import select_action, prepare_observation_lst
 
 

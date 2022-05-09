@@ -7,7 +7,7 @@ import numpy as np
 
 from tqdm.auto import tqdm
 from torch.cuda.amp import autocast as autocast
-from core.utils import select_action, prepare_observation_lst
+from core.utils import prepare_observation_lst
 from core.history import GameHistory
 
 
@@ -17,6 +17,8 @@ def test(model, config, counter, test_episodes, device, render, save_video=False
     ----------
     model: any
         common for evaluation
+    config: core.config.BaseAtariConfig
+        set the game information, such as max moves and the pre-processing of image inputs.
     counter: int
         current training step counter
     test_episodes: int
@@ -115,16 +117,17 @@ if __name__ == '__main__':
     config = BaseAtariConfig(test_max_moves=50)  # it controls the test max move
     config.set_game('BreakoutNoFrameskip-v4')
 
+    # obs_shape, action_dim, out_mlp_hidden_dim, num_blocks, res_out_channels
     m = DQNet((3*4, 96, 96), config.action_space_size, 32, 2, 64)
 
     rs, ps = test(
         model=m,
         config=config,
         counter=1,
-        test_episodes=7,
+        test_episodes=3,
         device='cpu',
-        render=False,
-        save_video=True,
+        render=True,
+        save_video=False,  # True for final test to save videos
         final_test=False,
         use_pb=True
     )

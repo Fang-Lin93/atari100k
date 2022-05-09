@@ -24,20 +24,33 @@ class BaseAtariConfig(object):
     """
 
     def __init__(self,
-                 max_moves: int = 108000,
+                 training_steps: int = 100000,
+                 max_moves: int = 108000,  # moves for play only, it works only if total_transitions not works
+                 total_transitions: int = 100 * 1000,  # atari 100k
                  test_max_moves: int = 12000,
                  gray_scale: bool = False,
-                 episode_life: bool = False,
+                 episode_life: bool = True,
                  cvt_string: bool = False,
                  image_based: bool = True,
                  frame_skip: int = 4,  # sticky actions...
+                 num_env: int = 5,  # number of env. for each worker
+                 num_actors: int = 1,
+                 checkpoint_interval: int = 100,
+                 use_priority: bool = True,
+                 prioritized_replay_eps=1e-6,
+                 td_steps=5,  # >= 1
+                 batch_size=256,
+                 discount_factor=0.997,
                  num_stack_obs: int = 4,
                  clip_reward: bool = True,
-                 exp_path: str = ''):
+                 exp_path: str = '',
+                 device='cpu'):
 
         """Base Config for Wrapped Atari games
         Parameters
         ----------
+        training_steps: int
+            training steps while collecting data
         max_moves: int
             max number of moves for an episode
         test_max_moves: int
@@ -46,7 +59,7 @@ class BaseAtariConfig(object):
         gray_scale: bool
             True -> use gray image observation
         episode_life: bool
-            True -> one life in atari100k games
+            True -> one life is treated as an episode
         cvt_string: bool
             True -> convert the observation into string in the replay buffer
         image_based: bool
@@ -60,14 +73,28 @@ class BaseAtariConfig(object):
         self.exp_path = exp_path
 
         # Self-Play
+        self.training_steps = training_steps
+        self.total_transitions = total_transitions  # Atari100k
         self.max_moves = max_moves
         self.test_max_moves = test_max_moves
         self.frame_skip = frame_skip
         self.num_stack_obs = num_stack_obs
         self.episode_life = episode_life
+        self.num_env = num_env
+        self.num_actors = num_actors
+        self.checkpoint_interval = checkpoint_interval  # when to update the worker's weights as the shared
+
+        # replay buffer
+        self.use_priority = use_priority
+        self.prioritized_replay_eps = prioritized_replay_eps
+
+        # training
+        self.td_steps = td_steps  # number of steps for value bootstrap
+        self.batch_size = batch_size
+        self.discount_factor = discount_factor
 
         # env
-        self.seed = None
+        self.seed = 0
         self.env_name = None
         self.action_space_size = None
         self.image_channel = 3
@@ -76,6 +103,9 @@ class BaseAtariConfig(object):
         self.gray_scale = gray_scale
         self.cvt_string = cvt_string
         self.clip_reward = clip_reward
+
+        # device
+        self.device = device
 
     def set_game(self, env_name):
 
@@ -89,7 +119,7 @@ class BaseAtariConfig(object):
 
     def new_game(self, seed=None, test=False, save_video=False, save_path=None, uid='', final_test=False):
         """
-        make_atari: random noop_init + sticky_actions & max frame + time limits
+        make_atari = random noop_init + sticky_actions & max frame + time limits
         WarpFrame: crop to 96x96
         EpisodicLifeEnv: One life -> one episode  (default = True)
         Monitor: record the video. But this can only run in the terminal not console

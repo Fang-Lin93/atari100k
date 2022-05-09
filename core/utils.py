@@ -51,30 +51,30 @@ def make_results_dir(exp_path, args):
     return exp_path, log_path
 
 
-def select_action(visit_counts, temperature=1, deterministic=True):
-    """select action from the root visit counts.
-    Parameters
-    ----------
-    visit_counts:
-         MCTS counts
-    temperature: float
-        the temperature for the distribution
-    deterministic: bool
-        True -> select the argmax
-        False -> sample from the distribution
-    """
-    action_probs = [visit_count_i ** (1 / temperature) for visit_count_i in visit_counts]
-    total_count = sum(action_probs)
-    assert total_count > 0
-    action_probs = [x / total_count for x in action_probs]
-    if deterministic:
-        action_pos = np.argmax([v for v in visit_counts])
-    else:
-        action_pos = np.random.choice(len(visit_counts), p=action_probs)
-
-    count_entropy = entropy(action_probs, base=2)
-    return action_pos, count_entropy  # actions_pos = 0, 1, 2,... as in atari100k env
-
+# def select_action(visit_counts, temperature=1, deterministic=True):
+#     """select action from the root visit counts.
+#     Parameters
+#     ----------
+#     visit_counts:
+#          MCTS counts
+#     temperature: float
+#         the temperature for the distribution
+#     deterministic: bool
+#         True -> select the argmax
+#         False -> sample from the distribution
+#     """
+#     action_probs = [visit_count_i ** (1 / temperature) for visit_count_i in visit_counts]
+#     total_count = sum(action_probs)
+#     assert total_count > 0
+#     action_probs = [x / total_count for x in action_probs]
+#     if deterministic:
+#         action_pos = np.argmax([v for v in visit_counts])
+#     else:
+#         action_pos = np.random.choice(len(visit_counts), p=action_probs)
+#
+#     count_entropy = entropy(action_probs, base=2)
+#     return action_pos, count_entropy  # actions_pos = 0, 1, 2,... as in atari100k env
+#
 
 def prepare_observation_lst(observation_lst):
     """Prepare the observations to satisfy the input format of torch
