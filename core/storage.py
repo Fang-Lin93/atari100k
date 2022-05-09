@@ -105,7 +105,7 @@ class SharedStorage(object):
 
     def get_worker_logs(self):
         if len(self.reward_log) > 0:
-            print(f'self.reward_log={self.reward_log}')
+            # print(f'self.reward_log={self.reward_log}')
             ori_reward = sum(self.ori_reward_log) / len(self.ori_reward_log)
             reward = sum(self.reward_log) / len(self.reward_log)
             reward_max = sum(self.reward_max_log) / len(self.reward_max_log)

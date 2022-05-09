@@ -129,3 +129,6 @@ dmypy.json
 .pyre/
 /eff/
 /effzero/
+/results/
+/recordings/
+/models/

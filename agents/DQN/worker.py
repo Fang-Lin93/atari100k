@@ -12,8 +12,78 @@ from core.history import GameHistory
 from core.config import BaseAtariConfig
 from core.utils import prepare_observation_lst
 from core.replay_buffer import ReplayBuffer
-from core.storage import SharedStorage
+from core.storage import SharedStorage, QueueStorage
 from agents.DQN.dqn import DQNet
+
+
+@ray.remote
+class PushWorker(object):
+    """
+    fetch data from the replay buffer and send it to the queue
+    """
+
+    def __init__(self, batch_queue: QueueStorage, replay_buffer: ReplayBuffer, model_storage: SharedStorage,
+                 config: BaseAtariConfig):
+        self.config = config
+        self.storage = model_storage
+        self.replay_buffer = replay_buffer
+        self.batch_queue = batch_queue
+
+    def run(self):
+        """
+        create data batch and send to the queue
+        """
+        start = False
+        while True:
+            # wait for starting
+            if not start:
+                start = ray.get(self.storage.get_start_signal.remote())
+                time.sleep(1)
+                continue
+
+            self.make_batch(self.config.batch_size, self.config.priority_prob_beta, self.config.n_td_steps)
+            time.sleep(1)
+
+    def make_batch(self, batch_size, beta, n_td_steps):
+        """
+        compute n-step return targets and form a batch of data
+        push the data to the queue waiting for training
+        decay_weights = 1, gamma, gamma**2,...
+        obs: current obs
+        actions: action int
+        n_step_reward: value prefix
+        next_obs: obs after value prefix, use target model to eval
+        next_obs_pos_in_batch: whether it is required to use
+        """
+        if ray.get(self.replay_buffer.get_total_len.remote()) < batch_size:
+            return
+
+        # print('fetch!!')
+
+        game_lst, game_pos_lst, indices_lst, weights_lst, make_time = \
+            ray.get(self.replay_buffer.prepare_batch_context.remote(batch_size, beta))
+        obs, actions, greedy_actions, n_step_reward, next_obs, next_obs_pos_in_batch = [], [], [], [], [], []
+        for i, (game_prefix, pos) in enumerate(zip(game_lst, game_pos_lst)):
+            game, prefix = game_prefix
+            obs.append(game[pos])
+            actions.append(game.actions[pos])
+            n_step_reward.append(prefix[pos])
+
+            # once need bootstrapping
+            if pos + n_td_steps < len(game):
+                greedy_actions.append(game.greedy_actions[pos + n_td_steps])
+                next_obs.append(game[pos + n_td_steps])
+                next_obs_pos_in_batch.append(i)
+        # obs = [i:i+stack_obs_num] be (-3, -2, -1, now) as obs.
+
+        if self.config.image_based:
+            obs, next_obs = prepare_observation_lst(obs), prepare_observation_lst(next_obs)
+            obs, next_obs = torch.from_numpy(obs).float() / 255.0, torch.from_numpy(next_obs).float() / 255.0
+        else:
+            obs, next_obs = torch.from_numpy(np.array(obs)), torch.from_numpy(np.array(next_obs))
+
+        batch = (obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, indices_lst, make_time)
+        self.batch_queue.push(batch)
 
 
 # @ray.remote(num_gpus=0.125)
@@ -40,7 +110,7 @@ class DataWorker(object):
         self.device = self.config.device
         self.last_model_index = -1
 
-        self.eps_greedy = 1
+        self.eps_greedy = 1.
         # to scale n future rewards
 
     def put(self, data):
@@ -61,17 +131,21 @@ class DataWorker(object):
             self.replay_buffer.save_pools.remote(self.local_buffer)
             del self.local_buffer[:]
 
-    def get_priorities(self, i, pred_values_lst, greedy_values_lst, value_prefix_lst):
+    def get_priorities(self, i, pred_values_lst, boostrap_values_lst, value_prefix_lst):
         # obtain the priorities at index i
         # print(f'pred_(N)_={len(pred_values_lst[i])}, '
-        #       f'greedy_(N-n)_={len(greedy_values_lst[i])}, '
+        #       f'greedy_(N-n)_={len(boostrap_values_lst[i])}, '
         #       f'prefix_(N)={len(value_prefix_lst[i])}')
         assert len([pred_values_lst[i]]) == len([value_prefix_lst[i]])
         if self.config.use_priority:
             pred_values = np.array(pred_values_lst[i])
-            target_values = np.pad(greedy_values_lst[i], (0, self.config.td_steps)) + np.array(value_prefix_lst[i])
+            if len(boostrap_values_lst[i]) > 0:  # the episode is too short! no boostrap required  TODO
+                target_values = np.pad(boostrap_values_lst[i], (0, self.config.n_td_steps)) \
+                                + np.array(value_prefix_lst[i])
+            else:
+                target_values = np.array(value_prefix_lst[i])
 
-            priorities = abs(pred_values-target_values) + self.config.prioritized_replay_eps
+            priorities = abs(pred_values - target_values) + self.config.prioritized_replay_eps
         else:
             # priorities is None -> use the max priority for all newly collected data
             priorities = None
@@ -81,14 +155,18 @@ class DataWorker(object):
     def run(self):
         # number of parallel mcts
         env_nums = self.config.num_env  # num of envs for each actor
-        n_td_step = self.config.td_steps
+        n_td_step = self.config.n_td_steps
         discount = self.config.discount_factor
-        n_step_weights = np.array([self.config.discount_factor ** i for i in range(self.config.td_steps)])
-        model = DQNet((3 * 4, 96, 96), self.config.action_space_size, 32, 2, 64)
+        n_step_weights = np.array([self.config.discount_factor ** i for i in range(self.config.n_td_steps)])
+        model = DQNet(self.config.obs_shape,
+                      self.config.action_space_size,
+                      self.config.out_mlp_hidden_dim,
+                      self.config.num_blocks,
+                      self.config.res_out_channels)
         model.to(self.device)
         model.eval()
 
-        start_training = True  # trace whether the remote model is available to train
+        start_training = False  # trace whether the remote model is available to train
         # different seed for different games
         envs = [self.config.new_game(self.config.seed + self.rank * i) for i in range(env_nums)]
 
@@ -101,7 +179,7 @@ class DataWorker(object):
         # determine the 100k benchmark: total_transitions <= 100K
         total_transitions = 0
         # max transition to collect for this data worker
-        max_transitions = self.config.total_transitions // self.config.num_actors # for each actor
+        max_transitions = self.config.total_transitions // self.config.num_actors  # for each actor
         with torch.no_grad():
             while True:
                 # loops for rollout a batch of envs
@@ -109,22 +187,24 @@ class DataWorker(object):
                 # training finished if reaching max training steps or max interaction steps (100K)
                 if trained_steps >= self.config.training_steps or total_transitions > self.config.total_transitions:  # TODO training steps need to be used
                     print('reach max training/action steps')
-                    time.sleep(30)
+                    time.sleep(5)
                     break
 
                 init_obses = [env.reset() for env in envs]
                 dones = np.array([False for _ in range(env_nums)])
                 game_histories = [GameHistory(self.config.num_stack_obs,
-                                              initial_obs=init_obses[i]) for i in range(env_nums)]
+                                              initial_obs=init_obses[i],
+                                              cvt_string=self.config.cvt_string) for i in range(env_nums)]
 
                 # used to calculate n-step td priorities# TODO
                 pred_values_lst = [[] for _ in range(env_nums)]
-                greedy_values_lst = [[] for _ in range(env_nums)]
+                boostrap_values_lst = [[] for _ in range(env_nums)]
                 value_prefix_lst = [[] for _ in range(env_nums)]
                 reward_window_lst = [deque(maxlen=n_td_step) for _ in range(env_nums)]
 
                 # some logs
-                eps_ori_reward_lst, eps_clip_reward_lst, eps_steps_lst, action_entropies_lst = np.zeros(env_nums), np.zeros(
+                eps_ori_reward_lst, eps_clip_reward_lst, eps_steps_lst, action_entropies_lst = np.zeros(
+                    env_nums), np.zeros(
                     env_nums), np.zeros(env_nums), np.zeros(env_nums)
                 step_counter = 0
 
@@ -150,13 +230,25 @@ class DataWorker(object):
                     trained_steps = ray.get(self.model_storage.get_counter.remote())
                     if trained_steps >= self.config.training_steps:
                         # training is finished
-                        print('training is finished')
-                        time.sleep(30)
+                        time.sleep(1)
                         return
 
-                    # if start_training and (total_transitions / max_transitions) > (
-                    #         trained_steps / self.config.training_steps):
-                    #     # self-play is faster than training speed or finished
+                    # data efficient demand !
+                    if start_training and \
+                            (total_transitions / max_transitions) > \
+                            (self.config.batch_size*self.config.num_actors * trained_steps
+                             / self.config.training_steps) > 0:
+                        # self-play is faster than training speed or finished
+                        # wait the learner for some time
+                        # print(f'saved_transitions={total_transitions}/{max_transitions*self.config.num_actors},'
+                        #       f' trained_steps={self.config.batch_size*trained_steps}/{self.config.training_steps}'
+                        #       f' self-play suspended, waiting learning...')
+                        time.sleep(1)
+                        continue
+
+                    # data inefficient but fast learning
+                    # if start_training and ray.get(self.replay_buffer.is_full.remote()):
+                    #     print('replay_buffer is full... waiting training')
                     #     time.sleep(1)
                     #     continue
 
@@ -192,7 +284,8 @@ class DataWorker(object):
                             self.model_storage.set_data_worker_logs.remote(log_self_play_moves, self_play_moves_max,
                                                                            log_self_play_ori_rewards,
                                                                            log_self_play_rewards,
-                                                                           self_play_clip_rewards_max, _temperature.mean(),
+                                                                           self_play_clip_rewards_max,
+                                                                           _temperature.mean(),
                                                                            visit_entropies, 0,
                                                                            other_dist)
                             self_play_clip_rewards_max = - np.inf  # reset for each new model weights!
@@ -203,22 +296,23 @@ class DataWorker(object):
                         if dones[i]:
                             # store current block trajectory
                             # pad zeros to value-prefix where boostrap is not required
-                            if self.config.use_priority and start_training:
-                                for s_ in range(n_td_step - 1):
-                                    reward_window_lst[i].append(0)
-                                    padded_r = np.pad(reward_window_lst[i], (0, n_td_step-len(reward_window_lst[i])))
-                                    value_prefix_lst[i].append(n_step_weights @ padded_r)
+                            for s_ in range(n_td_step - 1):
+                                reward_window_lst[i].append(0)
+                                padded_r = np.pad(reward_window_lst[i], (0, n_td_step - len(reward_window_lst[i])))
+                                value_prefix_lst[i].append(n_step_weights @ padded_r)
 
-                            priorities = self.get_priorities(i, pred_values_lst, greedy_values_lst, value_prefix_lst)
+                            priorities = self.get_priorities(i, pred_values_lst, boostrap_values_lst, value_prefix_lst)
                             game_histories[i].game_over()
 
-                            self.put((game_histories[i], priorities))  # add to local buffer
+                            self.put((game_histories[i], value_prefix_lst[i], priorities))  # add to local buffer
                             self.add_data_to_remote()
 
                             # reset the finished env and new a env
                             envs[i].close()
                             init_obs = envs[i].reset()
-                            game_histories[i] = GameHistory(self.config.num_stack_obs, initial_obs=init_obs)
+                            game_histories[i] = GameHistory(self.config.num_stack_obs,
+                                                            initial_obs=init_obs,
+                                                            cvt_string=self.config.cvt_string)
 
                             # log
                             self_play_clip_rewards_max = max(self_play_clip_rewards_max, eps_clip_reward_lst[i])
@@ -231,7 +325,7 @@ class DataWorker(object):
 
                             # reset priority log
                             pred_values_lst[i] = []
-                            greedy_values_lst[i] = []
+                            boostrap_values_lst[i] = []
                             value_prefix_lst[i] = []
                             reward_window_lst[i] = deque(maxlen=n_td_step)
 
@@ -260,10 +354,12 @@ class DataWorker(object):
                         # print(network_output.shape)  # = (B=num_envs, action_space)
                         # print('prob', action_probs)
 
+                        greedy_act = action_probs.argmax().item()
+
                         if random.random() < self.eps_greedy:  # epsilon-greedy
                             action = np.random.randint(env.action_space_size)
                         else:
-                            action = action_probs.argmax().item()
+                            action = greedy_act
 
                         # for log only
                         visit_entropy = entropy(action_probs, base=2)
@@ -275,7 +371,7 @@ class DataWorker(object):
                         clip_reward = np.sign(ori_reward) if self.config.clip_reward else ori_reward
 
                         # store data
-                        game_histories[i].add(action, obs, clip_reward)
+                        game_histories[i].add(action, greedy_act, obs, clip_reward)
 
                         eps_clip_reward_lst[i] += clip_reward
                         eps_ori_reward_lst[i] += ori_reward
@@ -283,17 +379,20 @@ class DataWorker(object):
 
                         eps_steps_lst[i] += 1
                         total_transitions += 1  # add 1 for each action
+                        # 1 -> 0.1 at ,max_transitions/2
+                        self.eps_greedy = max(1-1.8*total_transitions/max_transitions, 0.1)
+
+                        # value prefix
+                        reward_window_lst[i].append(clip_reward)
+                        if len(reward_window_lst[i]) >= n_td_step:
+                            value_prefix_lst[i].append(n_step_weights @ reward_window_lst[i])
 
                         if self.config.use_priority and start_training:
                             # predicted Q value for that act
                             pred_values_lst[i].append(network_output[i][action].item())
-                            reward_window_lst[i].append(clip_reward)
-                            # value prefix
-                            if len(reward_window_lst[i]) >= n_td_step:
-                                value_prefix_lst[i].append(n_step_weights@reward_window_lst[i])
                             # n-step boostrap for n-previous Q estimation
                             if len(pred_values_lst[i]) > n_td_step:
-                                greedy_values_lst[i].append(discount**n_td_step*max(network_output[i]))
+                                boostrap_values_lst[i].append(discount ** n_td_step * max(network_output[i]))
 
                 # Once max_moves achieved -> save the data to the replay buffer
                 for i in range(env_nums):
@@ -301,16 +400,15 @@ class DataWorker(object):
                     env.close()
 
                     if dones[i]:
-                        if self.config.use_priority and start_training:
-                            for s_ in range(n_td_step - 1):
-                                reward_window_lst[i].append(0)
-                                padded_r = np.pad(reward_window_lst[i], (0, n_td_step - len(reward_window_lst[i])))
-                                value_prefix_lst[i].append(n_step_weights @ padded_r)
+                        for s_ in range(n_td_step - 1):
+                            reward_window_lst[i].append(0)
+                            padded_r = np.pad(reward_window_lst[i], (0, n_td_step - len(reward_window_lst[i])))
+                            value_prefix_lst[i].append(n_step_weights @ padded_r)
 
-                        priorities = self.get_priorities(i, pred_values_lst, greedy_values_lst, value_prefix_lst)
+                        priorities = self.get_priorities(i, pred_values_lst, boostrap_values_lst, value_prefix_lst)
                         game_histories[i].game_over()
 
-                        self.put((game_histories[i], priorities))
+                        self.put((game_histories[i], value_prefix_lst[i], priorities))
                         self.add_data_to_remote()
 
                         self_play_clip_rewards_max = max(self_play_clip_rewards_max, eps_clip_reward_lst[i])

@@ -19,6 +19,7 @@ class GameHistory(object):
 
         self.obs_history = []
         self.actions = []
+        self.greedy_actions = []
         self.rewards = []
 
         if initial_obs is not None:
@@ -27,8 +28,12 @@ class GameHistory(object):
     def init(self, initial_obs):
         self.obs_history = [initial_obs for _ in range(self.num_stack_obs)]
 
-    def add(self, action, next_state, next_reward):
+    def add(self, action, greedy_act, next_state, next_reward):
+        """
+        greedy action is used to compute Q-value
+        """
         self.actions.append(action)
+        self.greedy_actions.append(greedy_act)
         self.obs_history.append(next_state)
         self.rewards.append(next_reward)
 
@@ -49,6 +54,12 @@ class GameHistory(object):
     def __len__(self):
         return len(self.actions)
 
+    def __getitem__(self, i):
+        # return stacked history!
+        frames = ray.get(self.obs_history)[i:i+self.num_stack_obs]
+        if self.cvt_string:
+            return [str_to_arr(obs, self.gray_scale) for obs in frames]
+        return frames
 
 
 if __name__ == '__main__':
@@ -63,11 +74,11 @@ if __name__ == '__main__':
     history = GameHistory(num_stack_obs=4)
     history.init(obs)
     done = False
-    i = 0
+    i_ = 0
 
     while not done:
         env.render()
-        i += 1
+        i_ += 1
         act = env.action_space.sample()
         obs, r, done, info = env.step(act)
 

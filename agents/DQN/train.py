@@ -1,56 +1,239 @@
+
+import os
 import ray
 import torch
+import time
+import torch.optim as optim
+import numpy as np
+from torch.nn import L1Loss
+import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+
 from agents.DQN.dqn import DQNet
+from agents.DQN.test import _test
 from core.config import BaseAtariConfig
-from core.storage import SharedStorage
-from agents.DQN.worker import DataWorker
+from core.storage import SharedStorage, QueueStorage
+from agents.DQN.worker import DataWorker, PushWorker
 from core.replay_buffer import ReplayBuffer
-
-game_config = BaseAtariConfig(training_steps=5,
-                              max_moves=200,  # moves for overall playing, atari 100k + some buffer to finish the game
-                              total_transitions=100,  # atari 100k
-                              test_max_moves=12000,
-                              gray_scale=False,
-                              episode_life=True,
-                              cvt_string=False,
-                              image_based=True,
-                              frame_skip=4,  # sticky actions...
-                              num_env=10,
-                              num_actors=1,
-                              checkpoint_interval=10,
-                              use_priority=True,
-                              prioritized_replay_eps=1e-6,
-                              td_steps=5,
-                              num_stack_obs=4,
-                              clip_reward=True,
-                              exp_path='results',
-                              device='cpu')  # it controls the test max move
-
-game_config.set_game('SpaceInvadersNoFrameskip-v4')
-
-# obs_shape, action_dim, out_mlp_hidden_dim, num_blocks, res_out_channels
-policy_model = DQNet((3 * 4, 96, 96), game_config.action_space_size, 32, 2, 64)
-target_model = DQNet((3 * 4, 96, 96), game_config.action_space_size, 32, 2, 64)
-storage = SharedStorage.remote(policy_model, target_model)
-
-replay_buffer = ReplayBuffer.remote(config=game_config)
-
-data_workers = [DataWorker.remote(rank, replay_buffer, storage, game_config) for rank in
-                range(0, game_config.num_actors)]
-workers = [worker.run.remote() for worker in data_workers]
-ray.wait(workers)
-
-# ! need queue.push and queue.get to send replay buffer data to the queue waiting to be used
-
-self = replay_buffer
+from core.log import log
+from loguru import logger
 
 
-# if __name__ == '__main__':
-#     self = data_workers[0]
-#     g, p = ray.get(self.get_local_buffer.remote())[0]
-#
-#     imgs = ray.get(g.obs_history)
-#     from matplotlib import pyplot as plt
-#     plt.imshow(imgs[0])
-#     plt.show()
+def adjust_lr(config, optimizer, step_count):
+    # adjust learning rate, step lr every lr_decay_steps
+    if step_count < config.lr_warm_step:
+        lr = config.lr_init * step_count / config.lr_warm_step
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+    else:
+        lr = config.lr_init * config.lr_decay_rate ** ((step_count - config.lr_warm_step) // config.lr_decay_steps)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+    return lr
+
+
+def _train(model, target_model, replay_buffer,
+           model_storage: SharedStorage,
+           batch_queue: QueueStorage,
+           config: BaseAtariConfig,
+           summary_writer):
+    gamma = config.discount_factor
+    td_step = config.n_td_steps
+
+    # common behavior model
+    model = model.to(config.device)
+    # common target model for evaluation
+    target_model = target_model.to(config.device)
+
+    optimizer = optim.SGD(model.parameters(), lr=config.lr_init, momentum=config.momentum,
+                          weight_decay=config.weight_decay)
+
+    model.train()
+    target_model.eval()
+
+    # wait until collecting enough data to start
+    while not (ray.get(replay_buffer.get_total_len.remote()) >= config.start_transitions):
+        time.sleep(1)
+        pass
+
+    logger.info('Begin training...')
+
+    model_storage.set_start_signal.remote()
+
+    step_count = 0
+    # Note: the interval of the current model and the target model is between x and 2x. (x = target_model_interval)
+    # recent_weights is the param of the target model
+
+    loss_log = {'td_loss': [], 'lr': []}
+
+    # while loop
+    while step_count < config.training_steps:
+        # remove data if the replay buffer is full. (more data settings)
+        # if step_count % 1000 == 0:
+        #     replay_buffer.remove_to_fit.remote()
+
+        # remove if more data
+        replay_buffer.remove_to_fit.remote()
+        # if step_count % 100 == 0:
+        #     # replay_buffer.clear_buffer.remote()
+        #     replay_buffer.remove_to_fit.remote()
+
+        # obtain a batch
+        batch = batch_queue.pop()
+        if batch is None:
+            time.sleep(0.3)
+            continue
+
+        model_storage.incr_counter.remote()
+        lr = adjust_lr(config, optimizer, step_count)
+
+        # update model for self-play
+        if step_count % config.checkpoint_interval == 0:
+            model_storage.set_weights.remote(model.get_weights())
+
+        # update target model for evaluation
+        if step_count % config.target_model_interval == 0:
+            target_model.set_weights(model.get_weights())
+
+        # preprocessing the data
+        # greedy_actions is from the policy network, but evaluated using target network (double DQN)
+        obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, indices_lst, make_time = batch
+
+        td_target = torch.from_numpy(np.array(n_step_reward)).to(config.device)
+
+        if len(next_obs_pos_in_batch) > 0:
+            with torch.no_grad():
+                bootstrapping = target_model(next_obs.to(config.device))
+                bootstrapping = bootstrapping[range(len(next_obs_pos_in_batch)), greedy_actions]
+                td_target[next_obs_pos_in_batch] += gamma ** td_step * bootstrapping
+
+        pred_q = model(obs.to(config.device))[range(len(actions)), actions]
+
+        # update new_priority
+        new_priority = L1Loss(reduction='none')(pred_q, td_target)
+        new_priority = new_priority.data.cpu().numpy() + config.prioritized_replay_eps
+        replay_buffer.update_priorities.remote(indices_lst, new_priority, make_time)
+
+        # huber loss
+        optimizer.zero_grad()
+        loss = F.smooth_l1_loss(pred_q, td_target)
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+        optimizer.step()
+
+        loss_log['lr'].append(lr)
+        loss_log['td_loss'].append(loss.item())
+        step_count += 1
+
+        # save common
+        if step_count % config.save_ckpt_interval == 0:
+            model_path = os.path.join(config.model_path, 'model_{}.p'.format(step_count))
+            torch.save(model.state_dict(), model_path)
+
+        logger.info(f'step_count={step_count}, td_loss={loss.item():.5f}, lr={lr:.5f}')
+        if step_count % 1 == 0:
+            # config, step_count, log_data, model, replay_buffer,  shared_storage, summary_writer, vis_result=True
+            log(config, step_count, (loss.item(), lr), model, replay_buffer, model_storage, summary_writer)
+
+    model_storage.set_weights.remote(model.get_weights())
+    print('Training finished!')
+    return model.get_weights()
+
+
+def train():
+    config = BaseAtariConfig(
+        # file
+        exp_path='results',
+        model_path='models',
+        save_ckpt_interval=1000,
+
+        # Self-Play
+        training_steps=1000 * 1000,
+        max_moves=1000 * 1000,  # moves for play only, it works only if total_transitions not works
+        total_transitions=1000 * 1000,  # atari 100k
+        test_max_moves=12000,
+        episode_life=True,
+        frame_skip=4,  # sticky actions...
+        num_env=10,  # number of env. for each worker
+        num_actors=1,
+        start_transitions=8,
+
+        # replay buffer
+        use_priority=True,
+        prioritized_replay_eps=1e-6,
+        priority_prob_beta=0.4,
+        rb_transition_size=10000,  # number of transitions permitted in replay buffer
+
+        # training
+        checkpoint_interval=25,
+        target_model_interval=50,
+        n_td_steps=5,  # >= 1
+        batch_size=64,
+        discount_factor=0.997,
+        weight_decay=1e-4,
+        momentum=0.9,
+        max_grad_norm=5,
+
+        # testing
+        test_interval=10,  # test after trained ? times
+        num_test_episodes=1,
+
+        # learning rate
+        lr_init=0.001,
+        lr_warm_step=100,
+        lr_decay_rate=0.1,
+        lr_decay_steps=100000,
+
+        # env
+        num_stack_obs=4,
+        gray_scale=False,
+        clip_reward=True,
+        cvt_string=True,
+        image_based=True,
+        device='cpu',
+
+        #       # game
+        game_name='SpaceInvadersNoFrameskip-v4',
+        # game_name='BreakoutNoFrameskip-v4',
+
+        # model
+        out_mlp_hidden_dim=32,
+        num_blocks=2,
+        res_out_channels=64
+
+    )  # it controls the test max move
+
+    model = DQNet(config.obs_shape,
+                  config.action_space_size,
+                  config.out_mlp_hidden_dim,
+                  config.num_blocks,
+                  config.res_out_channels)
+
+    target_model = DQNet(config.obs_shape,
+                         config.action_space_size,
+                         config.out_mlp_hidden_dim,
+                         config.num_blocks,
+                         config.res_out_channels)
+
+    model_storage = SharedStorage.remote(model, target_model)
+    model_storage.set_start_signal.remote()
+
+    batch_queue = QueueStorage(15, 20)
+    replay_buffer = ReplayBuffer.remote(config)
+
+    data_workers = [DataWorker.remote(rank, replay_buffer, model_storage, config) for rank in
+                    range(0, config.num_actors)]
+    push_worker = PushWorker.remote(batch_queue, replay_buffer, model_storage, config)
+    workers = [worker.run.remote() for worker in data_workers] + [push_worker.run.remote()]
+
+    workers += [_test.remote(config, model_storage)]
+
+    # ray.wait(workers)
+    print('training...')
+
+    summary_writer = SummaryWriter(config.exp_path, flush_secs=10)
+    final_weights = _train(model, target_model, replay_buffer, model_storage, batch_queue, config, summary_writer)
+
 

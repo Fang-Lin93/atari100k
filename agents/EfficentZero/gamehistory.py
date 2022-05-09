@@ -76,8 +76,8 @@ class GameHistory:
         """
         assert len(next_block_observations) <= self.config.num_unroll_steps
         assert len(next_block_child_visits) <= self.config.num_unroll_steps
-        assert len(next_block_root_values) <= self.config.num_unroll_steps + self.config.td_steps
-        assert len(next_block_rewards) <= self.config.num_unroll_steps + self.config.td_steps - 1
+        assert len(next_block_root_values) <= self.config.num_unroll_steps + self.config.n_td_steps
+        assert len(next_block_rewards) <= self.config.num_unroll_steps + self.config.n_td_steps - 1
 
         # notice: next block observation should start from (stacked_observation - 1) in next trajectory
         for observation in next_block_observations:

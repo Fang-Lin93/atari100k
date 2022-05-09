@@ -24,27 +24,55 @@ class BaseAtariConfig(object):
     """
 
     def __init__(self,
-                 training_steps: int = 100000,
+                 exp_path: str = '',
+                 model_path: str = 'models',
+                 save_ckpt_interval=1000,
+
+                 training_steps: int = 100 * 1000,
                  max_moves: int = 108000,  # moves for play only, it works only if total_transitions not works
                  total_transitions: int = 100 * 1000,  # atari 100k
                  test_max_moves: int = 12000,
-                 gray_scale: bool = False,
                  episode_life: bool = True,
-                 cvt_string: bool = False,
-                 image_based: bool = True,
                  frame_skip: int = 4,  # sticky actions...
                  num_env: int = 5,  # number of env. for each worker
                  num_actors: int = 1,
-                 checkpoint_interval: int = 100,
+                 start_transitions=8,
+
                  use_priority: bool = True,
                  prioritized_replay_eps=1e-6,
-                 td_steps=5,  # >= 1
+                 priority_prob_beta=0.4,
+                 rb_transition_size=1000,  # number of transitions permitted in replay buffer
+
+                 checkpoint_interval: int = 100,
+                 target_model_interval: int = 200,
+                 n_td_steps=5,  # >= 1
                  batch_size=256,
                  discount_factor=0.997,
+                 weight_decay=1e-4,
+                 momentum=0.9,
+                 max_grad_norm=5,
+
+
+                 test_interval: int = 10000,  # test after trained ? times
+                 num_test_episodes=8,
+
+                 lr_init=0.01,
+                 lr_warm_step=100,
+                 lr_decay_rate=0.1,
+                 lr_decay_steps=100000,
+
                  num_stack_obs: int = 4,
+                 gray_scale: bool = False,
                  clip_reward: bool = True,
-                 exp_path: str = '',
-                 device='cpu'):
+                 cvt_string: bool = False,
+                 image_based: bool = True,
+                 device='cpu',
+
+                 game_name: str = 'SpaceInvadersNoFrameskip-v4',
+                 out_mlp_hidden_dim=32,
+                 num_blocks=2,
+                 res_out_channels=64
+                 ):
 
         """Base Config for Wrapped Atari games
         Parameters
@@ -71,6 +99,8 @@ class BaseAtariConfig(object):
         """
         # file
         self.exp_path = exp_path
+        self.model_path = model_path
+        self.save_ckpt_interval = save_ckpt_interval
 
         # Self-Play
         self.training_steps = training_steps
@@ -82,16 +112,33 @@ class BaseAtariConfig(object):
         self.episode_life = episode_life
         self.num_env = num_env
         self.num_actors = num_actors
-        self.checkpoint_interval = checkpoint_interval  # when to update the worker's weights as the shared
+        self.start_transitions = start_transitions
 
         # replay buffer
         self.use_priority = use_priority
         self.prioritized_replay_eps = prioritized_replay_eps
+        self.rb_transition_size = rb_transition_size
+        self.priority_prob_beta = priority_prob_beta
 
         # training
-        self.td_steps = td_steps  # number of steps for value bootstrap
+        self.checkpoint_interval = checkpoint_interval  # when to update the worker's weights as the shared
+        self.target_model_interval = target_model_interval
+        self.n_td_steps = n_td_steps  # number of steps for value bootstrap
         self.batch_size = batch_size
         self.discount_factor = discount_factor
+        self.weight_decay = weight_decay
+        self.momentum = momentum
+        self.max_grad_norm = max_grad_norm
+
+        # testing
+        self.test_interval = test_interval
+        self.num_test_episodes = num_test_episodes
+
+        # learning rate
+        self.lr_init = lr_init
+        self.lr_warm_step = lr_warm_step
+        self.lr_decay_rate = lr_decay_rate
+        self.lr_decay_steps = lr_decay_steps
 
         # env
         self.seed = 0
@@ -106,6 +153,15 @@ class BaseAtariConfig(object):
 
         # device
         self.device = device
+
+        # game
+        self.game_name = game_name
+        self.set_game(game_name)
+
+        # model, see the dqn.py file
+        self.out_mlp_hidden_dim = out_mlp_hidden_dim
+        self.num_blocks = num_blocks
+        self.res_out_channels = res_out_channels
 
     def set_game(self, env_name):
 

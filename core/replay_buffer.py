@@ -1,9 +1,12 @@
 import ray
 import time
 
+import torch
 import numpy as np
+from core.utils import prepare_observation_lst
 from core.history import GameHistory
 from core.config import BaseAtariConfig
+from core.storage import QueueStorage
 
 
 @ray.remote  # remote -> distributed to other cpus to complete then retrieve
@@ -11,8 +14,10 @@ class ReplayBuffer(object):
     """Reference : DISTRIBUTED PRIORITIZED EXPERIENCE REPLAY
     Algo. 1 and Algo. 2 in Page-3 of (https://arxiv.org/pdf/1803.00933.pdf
     """
-    def __init__(self, config: BaseAtariConfig = None):
+
+    def __init__(self, config: BaseAtariConfig):
         self.config = config
+        # self.batch_queue = batch_queue
         self.batch_size = config.batch_size
         self.keep_ratio = 1
 
@@ -23,21 +28,20 @@ class ReplayBuffer(object):
         self.priorities = np.array([])
         self.game_look_up = []
 
-        self._eps_collected = 0   # episodes collected
+        self._eps_collected = 0  # episodes collected
         self.base_idx = 0  # recorder of how many games deleted
         self._alpha = 1  # config.priority_prob_alpha
-        self.transition_top = 10 * 10 ** 6  #  int(config.transition_num * 10 ** 6) size of replay buffer..
         self.clear_time = 0
+        self.transition_top = config.rb_transition_size  # int(config.transition_num * 10 ** 6) size of replay buffer..
 
     def save_pools(self, pools):
         # save a list of game histories
-        for (game, priorities) in pools:
+        for (game, value_prefix, priorities) in pools:
             # Only append end game
             # if end_tag:
-            self.save_game(game, priorities)
+            self.save_game(game, value_prefix, priorities)
 
-    def save_game(self, game: GameHistory, priorities=None):  # TODO
-        print('save_game=', self.size())
+    def save_game(self, game: GameHistory, value_prefix, priorities=None):  # TODO
         """
         Save a game history block
         Parameters
@@ -68,11 +72,11 @@ class ReplayBuffer(object):
             # priorities[valid_len:len(game)] = 0.
             self.priorities = np.concatenate((self.priorities, priorities.reshape(-1)))
 
-        self.buffer.append(game)  # [s0,s1,s2] [S0,S1,S2,S3] game s != S; look_up is counting
+        # directly add game object to the buffer. Later, it's convenient to get n-step return
+        self.buffer.append((game, value_prefix))  # [s0,s1,s2] [S0,S1,S2,S3] game s != S; look_up is counting
+
         # game's (start_idx, length) in the self.buffer len(game_look_up) = len(priority) = len(transitions)
         self.game_look_up += [(self.base_idx + len(self.buffer) - 1, step_pos) for step_pos in range(len(game))]
-
-        print('end_save_game=', self.size())
     def get_game(self, idx):
         # return a game
         # game_id: the history, game_pos: the step in that history
@@ -116,7 +120,7 @@ class ReplayBuffer(object):
         for idx in indices_lst:
             game_id, game_pos = self.game_look_up[idx]
             game_id -= self.base_idx
-            game = self.buffer[game_id]
+            game = self.buffer[game_id]  # (game_history, prefix)
 
             game_lst.append(game)
             game_pos_lst.append(game_pos)
@@ -132,10 +136,24 @@ class ReplayBuffer(object):
 
     def update_priorities(self, batch_indices, batch_priorities, make_time):
         # update the priorities for data still in replay buffer
-        for i in range(len(batch_indices)):
+        for i, (idx, prio) in enumerate(zip(batch_indices, batch_priorities)):
             if make_time[i] > self.clear_time:
-                idx, prio = batch_indices[i], batch_priorities[i]
                 self.priorities[idx] = prio
+
+        # for i in range(len(batch_indices)):
+        #     if make_time[i] > self.clear_time:
+        #         idx, prio = batch_indices[i], batch_priorities[i]
+        #         self.priorities[idx] = prio
+
+    # def remove_to_fit(self):
+    #     # remove some old data if the replay buffer is full.
+    #     while self.get_total_len() > self.transition_top:
+    #         excess_games_steps = len(self.buffer[0][0])
+    #         self.priorities = self.priorities[excess_games_steps:]
+    #         self.base_idx += num_excess_games
+    #
+    #         del self.buffer[:1]
+    #         print(f'prune buffer..trans={self.get_total_len()}')
 
     def remove_to_fit(self):
         # remove some old data if the replay buffer is full.
@@ -144,17 +162,19 @@ class ReplayBuffer(object):
         if total_transition > self.transition_top:
             index = 0
             for i in range(current_size):
-                total_transition -= len(self.buffer[i])
+                total_transition -= len(self.buffer[i][0])  # length of game
                 if total_transition <= self.transition_top * self.keep_ratio:
                     index = i
                     break
 
             if total_transition >= self.config.batch_size:
+                c_num = self.get_total_len()
                 self._remove(index + 1)
+                # print(f'prune buffer..trans={c_num}->{self.get_total_len()}/{self.transition_top}')
 
     def _remove(self, num_excess_games):
         # delete game histories
-        excess_games_steps = sum([len(game) for game in self.buffer[:num_excess_games]])
+        excess_games_steps = sum([len(game) for game, _ in self.buffer[:num_excess_games]])
         del self.buffer[:num_excess_games]
         self.priorities = self.priorities[excess_games_steps:]
         del self.game_look_up[:excess_games_steps]
@@ -164,6 +184,14 @@ class ReplayBuffer(object):
 
     def clear_buffer(self):
         del self.buffer[:]
+        self.priorities = np.array([])
+        self.game_look_up = []
+
+        self._eps_collected = 0  # episodes collected
+        self.base_idx = 0  # recorder of how many games deleted
+        self.clear_time = 0
+
+        self.clear_time = time.time()
 
     def size(self):
         # number of games
@@ -182,3 +210,6 @@ class ReplayBuffer(object):
     def get_total_len(self):
         # number of transitions
         return len(self.priorities)
+
+    def is_full(self):
+        return len(self.priorities) > self.transition_top
