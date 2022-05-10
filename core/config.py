@@ -41,6 +41,7 @@ class BaseAtariConfig(object):
                  use_priority: bool = True,
                  prioritized_replay_eps=1e-6,
                  priority_prob_beta=0.4,
+                 prio_beta_warm_step=20000,  # when will beta be 1
                  rb_transition_size=1000,  # number of transitions permitted in replay buffer
 
                  checkpoint_interval: int = 100,
@@ -57,7 +58,7 @@ class BaseAtariConfig(object):
                  num_test_episodes=8,
 
                  lr_init=0.01,
-                 lr_warm_step=100,
+                 lr_warm_step=1000,
                  lr_decay_rate=0.1,
                  lr_decay_steps=100000,
 
@@ -119,6 +120,7 @@ class BaseAtariConfig(object):
         self.prioritized_replay_eps = prioritized_replay_eps
         self.rb_transition_size = rb_transition_size
         self.priority_prob_beta = priority_prob_beta
+        self.prio_beta_warm_step = prio_beta_warm_step
 
         # training
         self.checkpoint_interval = checkpoint_interval  # when to update the worker's weights as the shared

@@ -87,7 +87,7 @@ def test(model, config, counter, num_test_episodes, device, render, save_video=F
 
     with torch.no_grad():
         # new games
-        envs = [config.new_game(seed=i, test=True, save_video=save_video, save_path=save_path, uid=i,
+        envs = [config.new_game(test=True, save_video=save_video, save_path=save_path, uid=i,
                                 final_test=final_test) for i in range(num_test_episodes)]
         # initializations
         init_obses = [env.reset() for env in envs]
@@ -160,17 +160,18 @@ if __name__ == '__main__':
     from agents.DQN.dqn import DQNet
     from core.config import BaseAtariConfig
 
-    config = BaseAtariConfig(test_max_moves=1000)  # it controls the test max move
+    config = BaseAtariConfig(test_max_moves=1000000)  # it controls the test max move
     config.set_game('SpaceInvadersNoFrameskip-v4')
 
     # obs_shape, action_dim, out_mlp_hidden_dim, num_blocks, res_out_channels
     m = DQNet((3*4, 96, 96), config.action_space_size, 32, 2, 64)
+    m.load_state_dict(torch.load('models/model_33000.p'))
 
     rs, ps = test(
         model=m,
         config=config,
-        counter=1,
-        num_test_episodes=2,
+        counter=-1,
+        num_test_episodes=5,
         device='cpu',
         render=True,
         save_video=True,  # True for final test to save videos

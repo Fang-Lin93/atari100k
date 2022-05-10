@@ -34,6 +34,9 @@ class PushWorker(object):
         create data batch and send to the queue
         """
         start = False
+        init_beta = self.config.priority_prob_beta
+        beta_warm_step = self.config.prio_beta_warm_step
+
         while True:
             # wait for starting
             if not start:
@@ -41,7 +44,10 @@ class PushWorker(object):
                 time.sleep(1)
                 continue
 
-            self.make_batch(self.config.batch_size, self.config.priority_prob_beta, self.config.n_td_steps)
+            train_step = ray.get(self.storage.get_counter.remote())
+            # increase beta: 0.4 -> 1
+            beta = init_beta + (1-init_beta)*train_step/beta_warm_step if train_step < beta_warm_step else 1
+            self.make_batch(self.config.batch_size, beta, self.config.n_td_steps)
             time.sleep(1)
 
     def make_batch(self, batch_size, beta, n_td_steps):
@@ -168,7 +174,8 @@ class DataWorker(object):
 
         start_training = False  # trace whether the remote model is available to train
         # different seed for different games
-        envs = [self.config.new_game(self.config.seed + self.rank * i) for i in range(env_nums)]
+        # envs = [self.config.new_game(self.config.seed + self.rank * i) for i in range(env_nums)]
+        envs = [self.config.new_game() for _ in range(env_nums)]  # remove seed
 
         def _get_max_entropy(action_space):
             p = 1.0 / action_space
@@ -185,7 +192,7 @@ class DataWorker(object):
                 # loops for rollout a batch of envs
                 trained_steps = ray.get(self.model_storage.get_counter.remote())
                 # training finished if reaching max training steps or max interaction steps (100K)
-                if trained_steps >= self.config.training_steps or total_transitions > self.config.total_transitions:  # TODO training steps need to be used
+                if trained_steps >= self.config.training_steps:
                     print('reach max training/action steps')
                     time.sleep(5)
                     break
@@ -234,10 +241,7 @@ class DataWorker(object):
                         return
 
                     # data efficient demand !
-                    if start_training and \
-                            (total_transitions / max_transitions) > \
-                            (self.config.batch_size*self.config.num_actors * trained_steps
-                             / self.config.training_steps) > 0:
+                    if start_training and (step_counter > trained_steps):
                         # self-play is faster than training speed or finished
                         # wait the learner for some time
                         # print(f'saved_transitions={total_transitions}/{max_transitions*self.config.num_actors},'
@@ -247,10 +251,10 @@ class DataWorker(object):
                         continue
 
                     # data inefficient but fast learning
-                    # if start_training and ray.get(self.replay_buffer.is_full.remote()):
-                    #     print('replay_buffer is full... waiting training')
-                    #     time.sleep(1)
-                    #     continue
+                    if start_training and ray.get(self.replay_buffer.is_full.remote()):
+                        # print('replay_buffer is full... waiting training')
+                        time.sleep(1)
+                        continue
 
                     _temperature = np.ones(env_nums)
 

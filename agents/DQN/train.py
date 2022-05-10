@@ -41,9 +41,10 @@ def _train(model, target_model, replay_buffer,
     gamma = config.discount_factor
     td_step = config.n_td_steps
 
-    # common behavior model
+    # central behavior model
     model = model.to(config.device)
-    # common target model for evaluation
+    # central target model for evaluation
+    # model_storage is used to save local model !
     target_model = target_model.to(config.device)
 
     optimizer = optim.SGD(model.parameters(), lr=config.lr_init, momentum=config.momentum,
@@ -70,11 +71,10 @@ def _train(model, target_model, replay_buffer,
     # while loop
     while step_count < config.training_steps:
         # remove data if the replay buffer is full. (more data settings)
-        # if step_count % 1000 == 0:
-        #     replay_buffer.remove_to_fit.remote()
 
-        # remove if more data
+        # # remove if more data
         replay_buffer.remove_to_fit.remote()
+
         # if step_count % 100 == 0:
         #     # replay_buffer.clear_buffer.remote()
         #     replay_buffer.remove_to_fit.remote()
@@ -88,7 +88,7 @@ def _train(model, target_model, replay_buffer,
         model_storage.incr_counter.remote()
         lr = adjust_lr(config, optimizer, step_count)
 
-        # update model for self-play
+        # update model for self-play: send to the local model
         if step_count % config.checkpoint_interval == 0:
             model_storage.set_weights.remote(model.get_weights())
 
@@ -110,7 +110,7 @@ def _train(model, target_model, replay_buffer,
 
         pred_q = model(obs.to(config.device))[range(len(actions)), actions]
 
-        # update new_priority
+        # update new_priority TODO: try anticipated priority
         new_priority = L1Loss(reduction='none')(pred_q, td_target)
         new_priority = new_priority.data.cpu().numpy() + config.prioritized_replay_eps
         replay_buffer.update_priorities.remote(indices_lst, new_priority, make_time)
@@ -129,7 +129,7 @@ def _train(model, target_model, replay_buffer,
 
         # save common
         if step_count % config.save_ckpt_interval == 0:
-            model_path = os.path.join(config.model_path, 'model_{}.p'.format(step_count))
+            model_path = os.path.join(config.model_path, 'model_{}.pth'.format(step_count))
             torch.save(model.state_dict(), model_path)
 
         logger.info(f'step_count={step_count}, td_loss={loss.item():.5f}, lr={lr:.5f}')
@@ -147,28 +147,29 @@ def train():
         # file
         exp_path='results',
         model_path='models',
-        save_ckpt_interval=1000,
+        save_ckpt_interval=5000,
 
         # Self-Play
-        training_steps=1000 * 1000,
-        max_moves=1000 * 1000,  # moves for play only, it works only if total_transitions not works
-        total_transitions=1000 * 1000,  # atari 100k
+        training_steps=100 * 1000,
+        max_moves=105 * 1000,  # moves for play only, it works only if total_transitions not works
+        total_transitions=100 * 1000,  # atari 100k
         test_max_moves=12000,
         episode_life=True,
         frame_skip=4,  # sticky actions...
         num_env=10,  # number of env. for each worker
-        num_actors=1,
+        num_actors=2,
         start_transitions=8,
 
         # replay buffer
         use_priority=True,
         prioritized_replay_eps=1e-6,
         priority_prob_beta=0.4,
-        rb_transition_size=10000,  # number of transitions permitted in replay buffer
+        prio_beta_warm_step=20000,
+        rb_transition_size=50000,  # number of transitions permitted in replay buffer
 
         # training
-        checkpoint_interval=25,
-        target_model_interval=50,
+        checkpoint_interval=100,
+        target_model_interval=200,
         n_td_steps=5,  # >= 1
         batch_size=64,
         discount_factor=0.997,
@@ -177,14 +178,14 @@ def train():
         max_grad_norm=5,
 
         # testing
-        test_interval=10,  # test after trained ? times
-        num_test_episodes=1,
+        test_interval=100,  # test after trained ? times
+        num_test_episodes=5,
 
         # learning rate
         lr_init=0.001,
-        lr_warm_step=100,
-        lr_decay_rate=0.1,
-        lr_decay_steps=100000,
+        lr_warm_step=1000,
+        lr_decay_rate=0.95,
+        lr_decay_steps=1000,
 
         # env
         num_stack_obs=4,
@@ -194,7 +195,7 @@ def train():
         image_based=True,
         device='cpu',
 
-        #       # game
+        # game
         game_name='SpaceInvadersNoFrameskip-v4',
         # game_name='BreakoutNoFrameskip-v4',
 

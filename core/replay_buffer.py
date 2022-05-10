@@ -159,6 +159,7 @@ class ReplayBuffer(object):
         # remove some old data if the replay buffer is full.
         current_size = self.size()
         total_transition = self.get_total_len()
+        # if total_transition > self.transition_top:
         if total_transition > self.transition_top:
             index = 0
             for i in range(current_size):

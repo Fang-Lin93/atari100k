@@ -106,7 +106,7 @@ class BlindCliffWalk(object):
         p = [100]*len(self.rb_unique) # all transitions are initialized to have the max priority
 
         while True:
-            (s, a, r, ns) = random.choices(self.replay_buffer)  # sample from trajectory, it's experience!
+            (s, a, r, ns) = random.choice(self.replay_buffer)  # sample from trajectory, it's experience!
             next_v = 0 if ns < 0 else max(q_table[ns])
             # update priority !
             p[self.rb_unique.index((s, a, r, ns))] = abs(r + self.gamma * next_v - q_table[s][a]) + eps
