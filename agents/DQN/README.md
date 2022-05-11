@@ -19,5 +19,5 @@ Make sure the working directory is under **atari100k** and run
 Python train.py
 `
 
-The results should be saved in a results' folder under**atari100k**. Test process will always save videos.
-Turn it off by tune parameters in train.py (Hyper-parameters are far from optimal)
+The results should be saved in a "results" folder under **atari100k**. Test process will always save videos.
+Turn it off by tune parameters in train.py (Hyper-parameters are far from optimal and need to be tuned)
