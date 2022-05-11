@@ -29,6 +29,7 @@ class ReplayBuffer(object):
         self.game_look_up = []
 
         self._eps_collected = 0  # episodes collected
+        self._trans_collected = 0
         self.base_idx = 0  # recorder of how many games deleted
         self._alpha = 1  # config.priority_prob_alpha
         self.clear_time = 0
@@ -58,8 +59,9 @@ class ReplayBuffer(object):
         # if self.get_total_len() >= self.config.total_transitions:
         #     return
 
-        self._eps_collected += 1
         valid_len = len(game)
+        self._eps_collected += 1
+        self._trans_collected += valid_len
 
         if priorities is None:
             max_prio = max(self.priorities) if self.buffer else 1  # initialize priorities to be maximum
@@ -189,6 +191,7 @@ class ReplayBuffer(object):
         self.game_look_up = []
 
         self._eps_collected = 0  # episodes collected
+        self._trans_collected = 0
         self.base_idx = 0  # recorder of how many games deleted
         self.clear_time = 0
 
@@ -201,6 +204,9 @@ class ReplayBuffer(object):
     def episodes_collected(self):
         # number of collected histories
         return self._eps_collected
+
+    def transitions_collected(self):
+        return self._trans_collected
 
     def get_batch_size(self):
         return self.batch_size

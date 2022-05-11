@@ -98,8 +98,8 @@ def _train(model, target_model, replay_buffer,
 
         # preprocessing the data
         # greedy_actions is from the policy network, but evaluated using target network (double DQN)
-        obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, indices_lst, make_time = batch
-
+        obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, \
+            indices_lst, is_weights, make_time = batch
         td_target = torch.from_numpy(np.array(n_step_reward)).to(config.device)
 
         if len(next_obs_pos_in_batch) > 0:
@@ -117,7 +117,8 @@ def _train(model, target_model, replay_buffer,
 
         # huber loss
         optimizer.zero_grad()
-        loss = F.smooth_l1_loss(pred_q, td_target)
+        loss = F.smooth_l1_loss(pred_q, td_target, reduction='none')
+        loss = (loss.view(-1) * torch.from_numpy(np.array(is_weights)).to(config.device)).mean()  # IS weighted
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
@@ -182,7 +183,7 @@ def train():
         num_test_episodes=5,
 
         # learning rate
-        lr_init=0.001,
+        lr_init=0.01,
         lr_warm_step=1000,
         lr_decay_rate=0.95,
         lr_decay_steps=1000,
@@ -238,3 +239,5 @@ def train():
     final_weights = _train(model, target_model, replay_buffer, model_storage, batch_queue, config, summary_writer)
 
 
+if __name__ == '__main__':
+    train()

@@ -7,10 +7,11 @@ from loguru import logger
 
 def log(config, step_count, log_data, model, replay_buffer,  shared_storage, summary_writer, vis_result=True):
     loss_data, lr = log_data
-    replay_episodes_collected, replay_buffer_size, priorities, total_num, worker_logs = ray.get([
-        replay_buffer.episodes_collected.remote(), replay_buffer.size.remote(),
-        replay_buffer.get_priorities.remote(), replay_buffer.get_total_len.remote(),
-        shared_storage.get_worker_logs.remote()])
+    replay_trans_collected, replay_episodes_collected, replay_buffer_size, priorities, total_num, worker_logs = \
+        ray.get([replay_buffer.transitions_collected.remote(),
+                 replay_buffer.episodes_collected.remote(), replay_buffer.size.remote(),
+                 replay_buffer.get_priorities.remote(), replay_buffer.get_total_len.remote(),
+                 shared_storage.get_worker_logs.remote()])
 
     worker_ori_reward, worker_reward, worker_reward_max, worker_eps_len, worker_eps_len_max, test_counter, test_dict, temperature, visit_entropy, priority_self_play, distributions = worker_logs
 
@@ -22,6 +23,7 @@ def log(config, step_count, log_data, model, replay_buffer,  shared_storage, sum
                                          step_count)
 
         summary_writer.add_scalar('{}/episodes_collected'.format(tag), replay_episodes_collected, step_count)
+        summary_writer.add_scalar('{}/transitions_collected'.format(tag), replay_trans_collected, step_count)
         summary_writer.add_scalar('{}/replay_buffer_len'.format(tag), replay_buffer_size, step_count)
         summary_writer.add_scalar('{}/total_node_num'.format(tag), total_num, step_count)
         summary_writer.add_scalar('{}/lr'.format(tag), lr, step_count)

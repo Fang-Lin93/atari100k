@@ -68,12 +68,13 @@ class PushWorker(object):
 
         game_lst, game_pos_lst, indices_lst, weights_lst, make_time = \
             ray.get(self.replay_buffer.prepare_batch_context.remote(batch_size, beta))
-        obs, actions, greedy_actions, n_step_reward, next_obs, next_obs_pos_in_batch = [], [], [], [], [], []
-        for i, (game_prefix, pos) in enumerate(zip(game_lst, game_pos_lst)):
+        obs, actions, greedy_actions, n_step_reward, next_obs, next_obs_pos_in_batch, is_w = [], [], [], [], [], [], []
+        for i, (game_prefix, pos, weight) in enumerate(zip(game_lst, game_pos_lst, weights_lst)):
             game, prefix = game_prefix
             obs.append(game[pos])
             actions.append(game.actions[pos])
             n_step_reward.append(prefix[pos])
+            is_w.append(weight)
 
             # once need bootstrapping
             if pos + n_td_steps < len(game):
@@ -88,7 +89,7 @@ class PushWorker(object):
         else:
             obs, next_obs = torch.from_numpy(np.array(obs)), torch.from_numpy(np.array(next_obs))
 
-        batch = (obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, indices_lst, make_time)
+        batch = (obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, indices_lst, is_w, make_time)
         self.batch_queue.push(batch)
 
 
@@ -241,7 +242,7 @@ class DataWorker(object):
                         return
 
                     # data efficient demand !
-                    if start_training and (step_counter > trained_steps):
+                    if start_training and (step_counter > trained_steps > 0):
                         # self-play is faster than training speed or finished
                         # wait the learner for some time
                         # print(f'saved_transitions={total_transitions}/{max_transitions*self.config.num_actors},'
