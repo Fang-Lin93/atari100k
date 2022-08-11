@@ -6,12 +6,16 @@ from loguru import logger
 
 
 def log(config, step_count, log_data, model, replay_buffer,  shared_storage, summary_writer, vis_result=True):
+    # step_count: trained steps
     loss_data, lr = log_data
-    replay_trans_collected, replay_episodes_collected, replay_buffer_size, priorities, total_num, worker_logs = \
+    replay_trans_collected, replay_episodes_collected, replay_buffer_size, priorities, total_num, trans_collected, worker_logs = \
         ray.get([replay_buffer.transitions_collected.remote(),
                  replay_buffer.episodes_collected.remote(), replay_buffer.size.remote(),
                  replay_buffer.get_priorities.remote(), replay_buffer.get_total_len.remote(),
+                 replay_buffer.transitions_collected.remote(),
                  shared_storage.get_worker_logs.remote()])
+
+    running_replay_ratio = step_count/trans_collected
 
     worker_ori_reward, worker_reward, worker_reward_max, worker_eps_len, worker_eps_len_max, test_counter, test_dict, temperature, visit_entropy, priority_self_play, distributions = worker_logs
 
@@ -28,6 +32,7 @@ def log(config, step_count, log_data, model, replay_buffer,  shared_storage, sum
         summary_writer.add_scalar('{}/total_node_num'.format(tag), total_num, step_count)
         summary_writer.add_scalar('{}/lr'.format(tag), lr, step_count)
         summary_writer.add_scalar('{}/td_loss'.format(tag), loss_data, step_count)
+        summary_writer.add_scalar('{}/replay_ratio'.format(tag), running_replay_ratio, step_count)
 
         if worker_reward is not None:
             summary_writer.add_scalar('workers/ori_reward', worker_ori_reward, step_count)

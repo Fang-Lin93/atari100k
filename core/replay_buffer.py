@@ -31,7 +31,7 @@ class ReplayBuffer(object):
         self._eps_collected = 0  # episodes collected
         self._trans_collected = 0
         self.base_idx = 0  # recorder of how many games deleted
-        self._alpha = 1  # config.priority_prob_alpha
+        self._alpha = self.config.priority_prob_alpha
         self.clear_time = 0
         self.transition_top = config.rb_transition_size  # int(config.transition_num * 10 ** 6) size of replay buffer..
 
@@ -114,6 +114,7 @@ class ReplayBuffer(object):
         indices_lst = np.random.choice(total, batch_size, p=probs, replace=False)
         # importance sampling weights
         weights_lst = (total * probs[indices_lst]) ** (-beta)
+
         weights_lst /= weights_lst.max()
 
         game_lst = []

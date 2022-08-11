@@ -1,4 +1,3 @@
-
 import numpy as np
 from core.wrap import make_atari, EpisodicLifeEnv, WarpFrame, AtariGame
 
@@ -8,6 +7,7 @@ class DiscreteSupport(object):
     Distributional rewards.
     Then using classification loss rather than regression loss
     """
+
     def __init__(self, min_: int, max_: int, delta=1.):
         assert min_ < max_
         self.min = min_
@@ -24,26 +24,33 @@ class BaseAtariConfig(object):
     """
 
     def __init__(self,
+                 # file
                  exp_path: str = '',
                  model_path: str = 'models',
                  save_ckpt_interval=1000,
 
+                 # self-play
                  training_steps: int = 100 * 1000,
                  max_moves: int = 108000,  # moves for play only, it works only if total_transitions not works
                  total_transitions: int = 100 * 1000,  # atari 100k
                  test_max_moves: int = 12000,
                  episode_life: bool = True,
                  frame_skip: int = 4,  # sticky actions...
-                 num_env: int = 5,  # number of env. for each worker
+                 num_env: int = 10,  # number of env. for each worker
                  num_actors: int = 1,
                  start_transitions=8,
 
+
+                 # replay buffer
                  use_priority: bool = True,
                  prioritized_replay_eps=1e-6,
+                 priority_prob_alpha=0.6,
                  priority_prob_beta=0.4,
                  prio_beta_warm_step=20000,  # when will beta be 1
                  rb_transition_size=1000,  # number of transitions permitted in replay buffer
+                 replay_ratio=0.1,
 
+                 # training
                  checkpoint_interval: int = 100,
                  target_model_interval: int = 200,
                  n_td_steps=5,  # >= 1
@@ -53,23 +60,26 @@ class BaseAtariConfig(object):
                  momentum=0.9,
                  max_grad_norm=5,
 
-
+                 # testing
                  test_interval: int = 10000,  # test after trained ? times
                  num_test_episodes=8,
 
+                 # learning rate
                  lr_init=0.01,
                  lr_warm_step=1000,
                  lr_decay_rate=0.1,
                  lr_decay_steps=100000,
 
+                 # env
                  num_stack_obs: int = 4,
                  gray_scale: bool = False,
                  clip_reward: bool = True,
                  cvt_string: bool = False,
                  image_based: bool = True,
+                 game_name: str = 'SpaceInvadersNoFrameskip-v4',
                  device='cpu',
 
-                 game_name: str = 'SpaceInvadersNoFrameskip-v4',
+                 # model
                  out_mlp_hidden_dim=32,
                  num_blocks=2,
                  res_out_channels=64
@@ -119,8 +129,10 @@ class BaseAtariConfig(object):
         self.use_priority = use_priority
         self.prioritized_replay_eps = prioritized_replay_eps
         self.rb_transition_size = rb_transition_size
+        self.priority_prob_alpha = priority_prob_alpha
         self.priority_prob_beta = priority_prob_beta
         self.prio_beta_warm_step = prio_beta_warm_step
+        self.replay_ratio = replay_ratio
 
         # training
         self.checkpoint_interval = checkpoint_interval  # when to update the worker's weights as the shared
@@ -210,14 +222,10 @@ class BaseAtariConfig(object):
 
 
 if __name__ == '__main__':
-
     config = BaseAtariConfig()
     config.set_game('BreakoutNoFrameskip-v4')
     envs = [config.new_game(), config.new_game()]
     init_obs = [env.reset() for env in envs]
     from matplotlib import pyplot as plt
+
     plt.imshow(init_obs[0])
-
-
-
-

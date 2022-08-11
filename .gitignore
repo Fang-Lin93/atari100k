@@ -133,3 +133,4 @@ dmypy.json
 /recordings/
 /models/
 /bests/
+/agents/EfficentZero/

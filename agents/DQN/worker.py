@@ -186,12 +186,20 @@ class DataWorker(object):
         max_visit_entropy = _get_max_entropy(self.config.action_space_size)
         # determine the 100k benchmark: total_transitions <= 100K
         total_transitions = 0
+        # used to control the replay_ratio speed
+        # replay_ratio = trained_steps/trans_collected
+        # trans_collected = step_counter * num_envs * num_actors
+        # If trans_collected * replay_ratio > trained_steps: slow down !
+        replay_ratio_multiplier = self.config.replay_ratio * self.config.num_env * self.config.num_actors
         # max transition to collect for this data worker
         max_transitions = self.config.total_transitions // self.config.num_actors  # for each actor
         with torch.no_grad():
             while True:
                 # loops for rollout a batch of envs
                 trained_steps = ray.get(self.model_storage.get_counter.remote())
+
+                # record the running replay ratio
+
                 # training finished if reaching max training steps or max interaction steps (100K)
                 if trained_steps >= self.config.training_steps:
                     print('reach max training/action steps')
@@ -225,7 +233,8 @@ class DataWorker(object):
                 self_play_moves_max = 0
 
                 self_play_visit_entropy = []
-                other_dist = {}
+
+                other_distribution = {}
 
                 # one loop: rollout N envs to finish all
                 # max_moves is to limit the maximal moves for each loop (rollout one batch of envs)
@@ -242,20 +251,21 @@ class DataWorker(object):
                         return
 
                     # data efficient demand !
-                    if start_training and (step_counter > trained_steps > 0):
-                        # self-play is faster than training speed or finished
-                        # wait the learner for some time
-                        # print(f'saved_transitions={total_transitions}/{max_transitions*self.config.num_actors},'
-                        #       f' trained_steps={self.config.batch_size*trained_steps}/{self.config.training_steps}'
-                        #       f' self-play suspended, waiting learning...')
-                        time.sleep(1)
-                        continue
+                    # replay-ratio = trained_steps / env_trans collected
+                    # if start_training and (replay_ratio_multiplier*step_counter > trained_steps > 0):
+                    #     # self-play is faster than training speed or finished
+                    #     # wait the learner for some time
+                    #     # print(f'saved_transitions={total_transitions}/{max_transitions*self.config.num_actors},'
+                    #     #       f' trained_steps={self.config.batch_size*trained_steps}/{self.config.training_steps}'
+                    #     #       f' self-play suspended, waiting learning...')
+                    #     time.sleep(1)
+                    #     continue
 
                     # data inefficient but fast learning
-                    if start_training and ray.get(self.replay_buffer.is_full.remote()):
-                        # print('replay_buffer is full... waiting training')
-                        time.sleep(1)
-                        continue
+                    # if start_training and ray.get(self.replay_buffer.is_full.remote()):
+                    #     # print('replay_buffer is full... waiting training')
+                    #     time.sleep(1)
+                    #     continue
 
                     _temperature = np.ones(env_nums)
 
@@ -292,7 +302,7 @@ class DataWorker(object):
                                                                            self_play_clip_rewards_max,
                                                                            _temperature.mean(),
                                                                            visit_entropies, 0,
-                                                                           other_dist)
+                                                                           other_distribution)
                             self_play_clip_rewards_max = - np.inf  # reset for each new model weights!
 
                     step_counter += 1
@@ -440,10 +450,10 @@ class DataWorker(object):
                     log_self_play_rewards = 0
                     log_self_play_ori_rewards = 0
 
-                other_dist = {}
+                other_distribution = {}
                 # send logs
                 self.model_storage.set_data_worker_logs.remote(log_self_play_moves, self_play_moves_max,
                                                                log_self_play_ori_rewards, log_self_play_rewards,
                                                                self_play_clip_rewards_max, _temperature.mean(),
                                                                visit_entropies, 0,
-                                                               other_dist)
+                                                               other_distribution)

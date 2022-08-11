@@ -81,7 +81,16 @@ class SharedStorage(object):
     def get_counter(self):
         return self.step_counter
 
-    def set_data_worker_logs(self, eps_len, eps_len_max, eps_ori_reward, eps_reward, eps_reward_max, temperature, visit_entropy, priority_self_play, distributions):
+    def set_data_worker_logs(self,
+                             eps_len,
+                             eps_len_max,
+                             eps_ori_reward,
+                             eps_reward,
+                             eps_reward_max,
+                             temperature,
+                             visit_entropy,
+                             priority_self_play,
+                             distributions):
         self.eps_lengths.append(eps_len)
         self.eps_lengths_max.append(eps_len_max)
         self.ori_reward_log.append(eps_ori_reward)

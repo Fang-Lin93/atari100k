@@ -49,6 +49,7 @@ def _train(model, target_model, replay_buffer,
 
     optimizer = optim.SGD(model.parameters(), lr=config.lr_init, momentum=config.momentum,
                           weight_decay=config.weight_decay)
+    # optimizer = optim.Adam(model.parameters(), lr=config.lr_init, weight_decay=config.weight_decay)
 
     model.train()
     target_model.eval()
@@ -111,13 +112,13 @@ def _train(model, target_model, replay_buffer,
         pred_q = model(obs.to(config.device))[range(len(actions)), actions]
 
         # update new_priority TODO: try anticipated priority
-        new_priority = L1Loss(reduction='none')(pred_q, td_target)
-        new_priority = new_priority.data.cpu().numpy() + config.prioritized_replay_eps
+        l1_dist = L1Loss(reduction='none')(pred_q, td_target)
+        new_priority = l1_dist.data.cpu().numpy() + config.prioritized_replay_eps
         replay_buffer.update_priorities.remote(indices_lst, new_priority, make_time)
 
-        # huber loss
         optimizer.zero_grad()
-        loss = F.smooth_l1_loss(pred_q, td_target, reduction='none')
+        # loss = F.smooth_l1_loss(pred_q, td_target, reduction='none') # huber loss
+        loss = 0.5*l1_dist**2
         loss = (loss.view(-1) * torch.from_numpy(np.array(is_weights)).to(config.device)).mean()  # IS weighted
         loss.backward()
 
@@ -148,9 +149,10 @@ def train():
         # file
         exp_path='results',
         model_path='models',
-        save_ckpt_interval=5000,
+        save_ckpt_interval=10000,
 
         # Self-Play
+        # TODO: change to strict 10k
         training_steps=100 * 1000,
         max_moves=105 * 1000,  # moves for play only, it works only if total_transitions not works
         total_transitions=100 * 1000,  # atari 100k
@@ -158,7 +160,7 @@ def train():
         episode_life=True,
         frame_skip=4,  # sticky actions...
         num_env=10,  # number of env. for each worker
-        num_actors=2,
+        num_actors=1,
         start_transitions=8,
 
         # replay buffer
@@ -167,10 +169,11 @@ def train():
         priority_prob_beta=0.4,
         prio_beta_warm_step=20000,
         rb_transition_size=50000,  # number of transitions permitted in replay buffer
+        replay_ratio=0.1,
 
         # training
-        checkpoint_interval=100,
-        target_model_interval=200,
+        checkpoint_interval=100,  # send common behavior model to local
+        target_model_interval=200,  # update target model to local
         n_td_steps=5,  # >= 1
         batch_size=64,
         discount_factor=0.997,
@@ -183,7 +186,7 @@ def train():
         num_test_episodes=5,
 
         # learning rate
-        lr_init=0.01,
+        lr_init=0.1,
         lr_warm_step=1000,
         lr_decay_rate=0.95,
         lr_decay_steps=1000,
@@ -241,3 +244,6 @@ def train():
 
 if __name__ == '__main__':
     train()
+
+    # TODO Adm -> SGD! Adam does not converge
+    # fixed buffer size may lead to fluctuation of Q-learning, since the replay ratio increases?
