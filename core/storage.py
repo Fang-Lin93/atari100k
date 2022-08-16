@@ -9,7 +9,7 @@ class QueueStorage(object):
         Parameters
         ----------
         threshold: int
-            if the current size if larger than threshold, the data won't be collected
+            if the current size is larger than threshold, the data won't be collected
         size: int
             the size of the queue
         """

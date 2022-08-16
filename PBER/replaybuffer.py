@@ -1,12 +1,9 @@
 import ray
 import time
 
-import torch
 import numpy as np
-from core.utils import prepare_observation_lst
 from core.history import GameHistory
-from core.config import BaseAtariConfig
-from core.storage import QueueStorage
+from pber.config import BaseAtariConfig
 
 
 @ray.remote  # remote -> distributed to other cpus to complete then retrieve
@@ -16,6 +13,8 @@ class ReplayBuffer(object):
     """
 
     def __init__(self, config: BaseAtariConfig):
+        self.back_factor = config.back_factor
+        self.back_step = config.back_step
         self.config = config
         # self.batch_queue = batch_queue
         self.batch_size = config.batch_size
@@ -26,6 +25,8 @@ class ReplayBuffer(object):
 
         self.buffer = []
         self.priorities = np.array([])
+        self.betas = np.array([])
+        self.raw_betas = []  # not modifiable
         self.game_look_up = []
 
         self._eps_collected = 0  # episodes collected
@@ -33,7 +34,7 @@ class ReplayBuffer(object):
         self.base_idx = 0  # recorder of how many games deleted
         self._alpha = self.config.priority_prob_alpha
         self.clear_time = 0
-        self.transition_top = config.rb_transition_size  # int(config.transition_num * 10 ** 6) size of replay buffer..
+        self.transition_top = config.rb_transition_size
 
     def save_pools(self, pools):
         # save a list of game histories
@@ -49,10 +50,6 @@ class ReplayBuffer(object):
         ----------
         game: Any
             a game history block, a sequence !
-        end_tag: bool
-            True -> the game is finished. (always True)
-        gap_steps: int
-            if the game is not finished, we only save the transitions that can be computed
         priorities: possible-list
             the priorities corresponding to the transitions in the game history
         """
@@ -65,19 +62,19 @@ class ReplayBuffer(object):
 
         if priorities is None:
             max_prio = max(self.priorities) if self.buffer else 1  # initialize priorities to be maximum
-            self.priorities = np.concatenate((self.priorities, [max_prio for _ in range(valid_len)] +
-                                              [0. for _ in range(valid_len, len(game))]))
+            self.priorities = np.concatenate((self.priorities, [max_prio for _ in range(valid_len)]))
         else:
             assert len(game) == len(priorities), " priorities should be of same length as the game steps"
-            # priorities = priorities.copy().reshape(-1)
-            # priorities[valid_len:len(game)] = 0.
             self.priorities = np.concatenate((self.priorities, priorities.reshape(-1)))
+
+        self.betas = np.concatenate((self.betas, [self.back_factor ** (valid_len - 1 - l_) for l_ in range(valid_len)]))
+        self.raw_betas += [self.back_factor ** (valid_len - 1 - l_) for l_ in range(valid_len)]
 
         # directly add game object to the buffer. Later, it's convenient to get n-step return
         self.buffer.append((game, value_prefix))  # [s0,s1,s2] [S0,S1,S2,S3] game s != S; look_up is counting
 
         # game's (start_idx, length) in the self.buffer len(game_look_up) = len(priority) = len(transitions)
-        self.game_look_up += [(self.base_idx + len(self.buffer) - 1, step_pos) for step_pos in range(len(game))]
+        self.game_look_up += [(self.base_idx + len(self.buffer) - 1, step_pos) for step_pos in range(valid_len)]
 
     def get_game(self, idx):
         # return a game
@@ -106,7 +103,7 @@ class ReplayBuffer(object):
 
         total = self.get_total_len()
 
-        probs = self.priorities ** self._alpha
+        probs = (self.priorities * self.betas) ** self._alpha
 
         probs /= probs.sum()
         # sample data, by indices
@@ -131,32 +128,34 @@ class ReplayBuffer(object):
         make_time = [time.time() for _ in range(len(indices_lst))]
 
         # indices_lst is the list of transitions idx inside the game_look_up list
-        # game_lst gives the least of where the game is
+        # game_lst gives the list of where the game is
         # game_pos_lst gives where the transition in the game
         # weights_lst gives the weight for importance sampling
         context = (game_lst, game_pos_lst, indices_lst, weights_lst, make_time)
         return context
 
-    def update_priorities(self, batch_indices, batch_priorities, make_time):
+    def update_priorities(self, indices_lst, new_priorities, make_time):
+        """
+
+        :param indices_lst: global index of the transition
+        :param new_priorities: new values
+        :param make_time:
+        :return:
+        """
         # update the priorities for data still in replay buffer
-        for i, (idx, prio) in enumerate(zip(batch_indices, batch_priorities)):
+        for i, (idx, prio) in enumerate(zip(indices_lst, new_priorities)):
             if make_time[i] > self.clear_time:
                 self.priorities[idx] = prio
 
-        # for i in range(len(batch_indices)):
-        #     if make_time[i] > self.clear_time:
-        #         idx, prio = batch_indices[i], batch_priorities[i]
-        #         self.priorities[idx] = prio
-
-    # def remove_to_fit(self):
-    #     # remove some old data if the replay buffer is full.
-    #     while self.get_total_len() > self.transition_top:
-    #         excess_games_steps = len(self.buffer[0][0])
-    #         self.priorities = self.priorities[excess_games_steps:]
-    #         self.base_idx += num_excess_games
-    #
-    #         del self.buffer[:1]
-    #         print(f'prune buffer..trans={self.get_total_len()}')
+                # self.betas[idx] = 1            # TODO update betas
+                self.betas[idx] = self.raw_betas[idx]
+                _, pos = self.game_look_up[idx]
+                # back-propagate beta
+                for back_ in range(pos):
+                    if back_ > self.back_step:
+                        break
+                    self.betas[idx-1-back_] = max(self.back_factor ** back_, self.betas[idx - 1 - back_])
+                # reset the current beta
 
     def remove_to_fit(self):
         # remove some old data if the replay buffer is full.
@@ -171,8 +170,7 @@ class ReplayBuffer(object):
                     index = i
                     break
 
-            if total_transition >= self.config.batch_size:
-                c_num = self.get_total_len()
+            if total_transition >= self.batch_size:
                 self._remove(index + 1)
                 # print(f'prune buffer..trans={c_num}->{self.get_total_len()}/{self.transition_top}')
 
@@ -181,6 +179,9 @@ class ReplayBuffer(object):
         excess_games_steps = sum([len(game) for game, _ in self.buffer[:num_excess_games]])
         del self.buffer[:num_excess_games]
         self.priorities = self.priorities[excess_games_steps:]
+        self.betas = self.betas[excess_games_steps:]
+        self.raw_betas = self.raw_betas[excess_games_steps:]
+
         del self.game_look_up[:excess_games_steps]
         self.base_idx += num_excess_games
 
@@ -189,6 +190,8 @@ class ReplayBuffer(object):
     def clear_buffer(self):
         del self.buffer[:]
         self.priorities = np.array([])
+        self.betas = np.array([])
+        self.raw_betas = []
         self.game_look_up = []
 
         self._eps_collected = 0  # episodes collected
@@ -221,3 +224,4 @@ class ReplayBuffer(object):
 
     def is_full(self):
         return len(self.priorities) > self.transition_top
+

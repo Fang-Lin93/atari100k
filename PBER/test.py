@@ -33,7 +33,8 @@ def test_(config:BaseAtariConfig, model_storage: SharedStorage):
             test_model.set_weights(ray.get(model_storage.get_weights.remote()))
             test_model.eval()
 
-            test_score, _ = test(test_model, config, counter, config.num_test_episodes, config.device, False, save_video=True)
+            test_score, _ = test(test_model, config, counter, config.num_test_episodes, config.device, False,
+                                 save_video=config.save_test_video)
             mean_score = test_score.mean()
             std_score = test_score.std()
             print('Start evaluation at step {}.'.format(counter))

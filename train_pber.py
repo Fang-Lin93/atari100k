@@ -1,4 +1,3 @@
-
 import os
 import ray
 import torch
@@ -9,12 +8,12 @@ from torch.nn import L1Loss
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-from agents.DQN.dqn import DQNet
-from agents.DQN.test import test_
-from core.config import BaseAtariConfig
+from pber.dqn import DQNet
+from pber.test import test_
+from pber.config import BaseAtariConfig
 from core.storage import SharedStorage, QueueStorage
-from agents.DQN.worker import DataWorker, PushWorker
-from core.replay_buffer import ReplayBuffer
+from pber.workers import DataWorker, PushWorker
+from pber.replaybuffer import ReplayBuffer
 from core.log import log
 from loguru import logger
 
@@ -29,7 +28,6 @@ def adjust_lr(config, optimizer, step_count):
         lr = config.lr_init * config.lr_decay_rate ** ((step_count - config.lr_warm_step) // config.lr_decay_steps)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-
     return lr
 
 
@@ -100,7 +98,7 @@ def _train(model, target_model, replay_buffer,
         # preprocessing the data
         # greedy_actions is from the policy network, but evaluated using target network (double DQN)
         obs, actions, n_step_reward, next_obs, greedy_actions, next_obs_pos_in_batch, \
-            indices_lst, is_weights, make_time = batch
+        indices_lst, is_weights, make_time = batch
         td_target = torch.from_numpy(np.array(n_step_reward)).to(config.device)
 
         if len(next_obs_pos_in_batch) > 0:
@@ -118,7 +116,7 @@ def _train(model, target_model, replay_buffer,
 
         optimizer.zero_grad()
         # loss = F.smooth_l1_loss(pred_q, td_target, reduction='none') # huber loss
-        loss = 0.5*l1_dist**2
+        loss = 0.5 * l1_dist ** 2
         loss = (loss.view(-1) * torch.from_numpy(np.array(is_weights)).to(config.device)).mean()  # IS weighted
         loss.backward()
 
@@ -200,13 +198,17 @@ def train():
         device='cpu',
 
         # game
-        game_name='SpaceInvadersNoFrameskip-v4',
-        # game_name='BreakoutNoFrameskip-v4',
+        # game_name='SpaceInvadersNoFrameskip-v4',
+        game_name='BreakoutNoFrameskip-v4',
 
         # model
         out_mlp_hidden_dim=32,
         num_blocks=2,
-        res_out_channels=64
+        res_out_channels=64,
+
+        # PBER
+        back_factor=0.01,
+        back_step=1
 
     )  # it controls the test max move
 
@@ -244,6 +246,3 @@ def train():
 
 if __name__ == '__main__':
     train()
-
-    # TODO Adm -> SGD! Adam does not converge
-    # fixed buffer size may lead to fluctuation of Q-learning, since the replay ratio increases?

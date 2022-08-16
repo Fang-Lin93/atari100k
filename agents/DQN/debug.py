@@ -2,7 +2,7 @@
 import ray
 import torch
 from agents.DQN.dqn import DQNet
-from agents.DQN.test import _test
+from agents.DQN.test import test_
 from core.config import BaseAtariConfig
 from core.storage import SharedStorage, QueueStorage
 from agents.DQN.worker import DataWorker, PushWorker
@@ -48,7 +48,7 @@ data_workers = [DataWorker.remote(rank, replay_buffer, model_storage, game_confi
 push_worker = PushWorker.remote(batch_queue, replay_buffer, model_storage, game_config)
 workers = [worker.run.remote() for worker in data_workers] + [push_worker.run.remote()]
 
-workers += [_test.remote(game_config, model_storage)]
+workers += [test_.remote(game_config, model_storage)]
 
 ray.wait(workers)
 print('training...')

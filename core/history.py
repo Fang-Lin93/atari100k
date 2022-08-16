@@ -82,7 +82,7 @@ if __name__ == '__main__':
         act = env.action_space.sample()
         obs, r, done, info = env.step(act)
 
-        history.add(act, obs, r)
+        history.add(act, act, obs, r)
         print('reward=', r)
         time.sleep(0.1)
 

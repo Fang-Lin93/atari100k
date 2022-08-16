@@ -511,7 +511,7 @@ configs = [
     {
         'desc': 'beta_ER',
         'func': 'beta_er',
-        'kwargs': {'max_iter': max_num, 'init_p': init_p}
+        'kwargs': {'max_iter': max_num, 'init_p': init_p, 'back_factor': 0.1}
     },
     # {
     #     'desc': 'sweeping',

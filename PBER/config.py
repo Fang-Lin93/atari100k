@@ -1,3 +1,4 @@
+
 import numpy as np
 from core.wrap import make_atari, EpisodicLifeEnv, WarpFrame, AtariGame
 
@@ -62,6 +63,7 @@ class BaseAtariConfig(object):
                  # testing
                  test_interval: int = 10000,  # test after trained ? times
                  num_test_episodes=8,
+                 save_test_video=False,
 
                  # learning rate
                  lr_init=0.01,
@@ -81,7 +83,11 @@ class BaseAtariConfig(object):
                  # model
                  out_mlp_hidden_dim=32,
                  num_blocks=2,
-                 res_out_channels=64
+                 res_out_channels=64,
+
+                 # PBER
+                 back_factor=0.1,
+                 back_step=1
                  ):
 
         """Base Config for Wrapped Atari games
@@ -146,6 +152,7 @@ class BaseAtariConfig(object):
         # testing
         self.test_interval = test_interval
         self.num_test_episodes = num_test_episodes
+        self.save_test_video = save_test_video
 
         # learning rate
         self.lr_init = lr_init
@@ -175,6 +182,10 @@ class BaseAtariConfig(object):
         self.out_mlp_hidden_dim = out_mlp_hidden_dim
         self.num_blocks = num_blocks
         self.res_out_channels = res_out_channels
+
+        # PBER
+        self.back_factor = back_factor
+        self.back_step = back_step
 
     def set_game(self, env_name):
 
@@ -228,3 +239,151 @@ if __name__ == '__main__':
     from matplotlib import pyplot as plt
 
     plt.imshow(init_obs[0])
+
+
+# import numpy as np
+# from core.wrap import make_atari, EpisodicLifeEnv, WarpFrame, AtariGame
+#
+#
+# class DiscreteSupport(object):
+#     """
+#     Distributional rewards.
+#     Then using classification loss rather than regression loss
+#     """
+#
+#     def __init__(self, min_: int, max_: int, delta=1.):
+#         assert min_ < max_
+#         self.min = min_
+#         self.max = max_
+#         self.range = np.arange(min_, max_ + 1, delta)
+#         self.size = len(self.range)
+#         self.delta = delta
+#
+#
+# class AtariConfig(object):
+#     """
+#     Basic Atari env. config for ANY algorithms
+#     This config keeps the basic observation setting
+#     """
+#
+#     def __init__(self,
+#                  # env
+#                  num_stack_obs: int = 4,
+#                  episode_life: bool = True,
+#                  frame_skip: int = 4,  # sticky actions...
+#                  gray_scale: bool = False,
+#                  clip_reward: bool = True,
+#                  cvt_string: bool = False,
+#                  image_based: bool = True,
+#                  game_name: str = 'SpaceInvadersNoFrameskip-v4',
+#                  device='cpu',
+#
+#                  # number of moveds
+#                  test_max_moves: int = 1000,
+#                  train_max_moves: int = 100_000,
+#                  ):
+#         # env
+#         self.seed = 0
+#         self.env_name = None
+#         self.action_space_size = None
+#         self.image_channel = 3
+#         self.image_based = image_based
+#         self.obs_shape = None
+#         self.gray_scale = gray_scale
+#         self.cvt_string = cvt_string
+#         self.clip_reward = clip_reward
+#         self.episode_life = episode_life
+#
+#         # device
+#         self.device = device
+#
+#         # obs
+#         self.num_stack_obs = num_stack_obs
+#         self.frame_skip = frame_skip
+#         self.test_max_moves = test_max_moves
+#         self.train_max_moves = train_max_moves
+#
+#         # game
+#         self.game_name = game_name
+#         self.set_game(game_name)
+#
+#     def set_game(self, env_name):
+#
+#         self.env_name = env_name
+#         # gray scale
+#         if self.gray_scale:
+#             self.image_channel = 1
+#         obs_shape = (self.image_channel, 96, 96)
+#         self.obs_shape = (obs_shape[0] * self.num_stack_obs, obs_shape[1], obs_shape[2])
+#         self.action_space_size = self.new_game().action_space_size
+#
+#     def new_game(self, seed=None, test=False, save_video=False, save_path=None, uid='', final_test=False):
+#         """
+#         make_atari = random noop_init + sticky_actions & max frame + time limits
+#         WarpFrame: crop to 96x96
+#         EpisodicLifeEnv: One life -> one episode  (default = True)
+#         Monitor: record the video. But this can only run in the terminal not console
+#         AtariWrapper: it create game object from env. with:
+#             accessibility to legal actions
+#             observation to str to save memory
+#         """
+#
+#         if test:
+#             env = make_atari(self.env_name, skip=self.frame_skip, max_episode_steps=self.test_max_moves)
+#         else:
+#             env = make_atari(self.env_name, skip=self.frame_skip, max_episode_steps=self.train_max_moves)
+#
+#         if self.episode_life and not test:
+#             env = EpisodicLifeEnv(env)
+#         env = WarpFrame(env, width=self.obs_shape[1], height=self.obs_shape[2], grayscale=self.gray_scale)
+#
+#         if seed is not None:
+#             env.seed(seed)
+#
+#         if save_video:
+#             from gym.wrappers.record_video import RecordVideo
+#             env = RecordVideo(env, video_folder=save_path, name_prefix=uid)
+#
+#         return AtariGame(env, env.action_space.n, cvt_string=self.cvt_string)
+#
+#
+# if __name__ == '__main__':
+#     from pber.storage import ReplayBuffer
+#     from core.history import GameHistory
+#
+#     atari = AtariConfig()
+#     atari.set_game('BreakoutNoFrameskip-v4')
+#     env_nums = 2
+#     envs = [atari.new_game() for _ in range(env_nums)]
+#     init_obs = [env.reset() for env in envs]
+#
+#     games = [GameHistory(atari.num_stack_obs, initial_obs=init_obs[i], cvt_string=atari.cvt_string) for i in
+#              range(env_nums)]
+#     dones = [False for _ in range(env_nums)]
+#
+#     while not all(dones):
+#         for i in range(env_nums):
+#             if dones[i]:
+#                 games[i].game_over()
+#             else:
+#                 env = envs[i]
+#                 obs, ori_reward, done, info = env.step(1)
+#                 # clip the reward
+#                 # store data
+#                 games[i].add(1, 2, obs, ori_reward)
+#                 dones[i] = done
+#
+#     buffer_config = {'beta': 0.1,
+#                      'back_step': 1,
+#                      'batch_size': 10,
+#                      'priority_prob_alpha': 0.4,
+#                      'rb_transition_size': 1000}
+#
+#     rb = ReplayBuffer(buffer_config)
+#
+#     rb.save_pools(zip(games, [np.array([1]*len(games[0])), np.array([0.5]*len(games[1]))]))
+#
+#     t = rb.prepare_batch_context(5, 1)
+#     from matplotlib import pyplot as plt
+#
+#     plt.imshow(init_obs[0])

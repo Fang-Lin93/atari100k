@@ -7,13 +7,12 @@ import torch
 import numpy as np
 from collections import deque
 from scipy.stats import entropy
-from torch.nn import L1Loss
 from core.history import GameHistory
-from core.config import BaseAtariConfig
+from pber.config import BaseAtariConfig
 from core.utils import prepare_observation_lst
-from core.replay_buffer import ReplayBuffer
+from pber.replaybuffer import ReplayBuffer
 from core.storage import SharedStorage, QueueStorage
-from agents.DQN.dqn import DQNet
+from pber.dqn import DQNet
 
 
 @ray.remote
